@@ -53,13 +53,14 @@ def EAP_clean_backward_hook(
         grad_expanded = grad.unsqueeze(-2)
     else:
         grad_expanded = grad
-
+        
+    # Computing EAP scores for attention components
     result = torch.matmul(
         upstream_activations_difference[:, :, earlier_upstream_nodes_slice],
         grad_expanded.transpose(-1, -2)
     ).sum(dim=0).sum(dim=0)
 
-    graph.eap_scores[earlier_upstream_nodes_slice, hook_slice] += result 
+    graph.eap_scores[earlier_upstream_nodes_slice, hook_slice] += result
 
 def EAP_downstream_patching_hook(
     activations: Union[Float[Tensor, "batch_size seq_len n_heads d_model"], Float[Tensor, "batch_size seq_len d_model"]],
@@ -70,6 +71,7 @@ def EAP_downstream_patching_hook(
     hook_slice = graph.downstream_hook_slice[hook.name]
     earlier_upstream_nodes_slice = graph.get_slice_previous_upstream_nodes(hook)
 
+    # Compute patching difference for attention input
     patch_difference = einops.einsum(
         graph.adj_matrix[earlier_upstream_nodes_slice, hook_slice],
         upstream_activations_difference[:, :, earlier_upstream_nodes_slice, :],
@@ -109,9 +111,9 @@ def EAP(
 
     graph.reset_scores()
 
-    # Updated hook filters for new hook names
-    upstream_hook_filter = lambda name: name.endswith(tuple(graph.upstream_hooks))
-    downstream_hook_filter = lambda name: name.endswith(tuple(graph.downstream_hooks))
+    # Hook filters updated for new hook names
+    upstream_hook_filter = lambda name: any(name.endswith(hook) for hook in graph.upstream_hooks)
+    downstream_hook_filter = lambda name: any(name.endswith(hook) for hook in graph.downstream_hooks)
 
     corruped_upstream_hook_fn = partial(
         EAP_corrupted_forward_hook,
