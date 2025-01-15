@@ -15,18 +15,16 @@ class EAPGraph:
         self.valid_upstream_node_types = ["resid_pre", "mlp", "head"]
         self.valid_downstream_node_types = ["resid_post", "mlp", "head"]
 
-        # Updated hook types to use full head outputs
         self.valid_upstream_hook_types = ["hook_resid_pre", "hook_result", "hook_mlp_out"]
-        self.valid_downstream_hook_types = ["attn.hook_result", "hook_mlp_in", "hook_resid_post"]
+        self.valid_downstream_hook_types = ["hook_attn_in", "hook_mlp_in", "hook_resid_post"]
 
-        # Updated component ordering
         self.upstream_component_ordering = {
             "hook_resid_pre": 0,
             "hook_result": 1,
             "hook_mlp_out": 2,
         }
         self.downstream_component_ordering = {
-            "attn.hook_result": 0,
+            "hook_attn_in": 0,
             "hook_mlp_in": 1,
             "hook_resid_post": 2
         }
@@ -66,7 +64,6 @@ class EAPGraph:
 
         upstream_node_index = 0
 
-        # Process upstream nodes (unchanged)
         for hook_name in self.upstream_hooks:
             layer = int(hook_name.split(".")[1])
             hook_type = hook_name.split(".")[-1]
@@ -99,7 +96,9 @@ class EAPGraph:
                 self.upstream_hook_slice[hook_name] = slice(upstream_node_index, upstream_node_index + 1)
                 upstream_node_index += 1
 
-        # Handle remaining layers
+            else:
+                assert False, "Invalid upstream hook type"
+
         for layer in range(0, self.cfg.n_layers):
             if layer not in self.upstream_nodes_before_layer:
                 self.upstream_nodes_before_layer[layer] = slice(0, upstream_node_index)
@@ -108,12 +107,11 @@ class EAPGraph:
 
         downstream_node_index = 0
 
-        # Updated downstream node processing
         for hook_name in self.downstream_hooks:
             layer = int(hook_name.split(".")[1])
             hook_type = hook_name.split(".")[-1]
 
-            if hook_type == "attn.hook_result":
+            if hook_type == "hook_attn_in":
                 for head_idx in range(self.cfg.n_heads):
                     self.downstream_nodes.append(f"head.{layer}.{head_idx}")
                     self.downstream_node_index[f"head.{layer}.{head_idx}"] = downstream_node_index + head_idx
@@ -132,6 +130,9 @@ class EAPGraph:
                 self.downstream_hook_slice[hook_name] = slice(downstream_node_index, downstream_node_index + 1)
                 downstream_node_index += 1
 
+            else:
+                assert False, "Invalid downstream hook type"
+
         self.n_upstream_nodes = len(self.upstream_nodes)
         self.n_downstream_nodes = len(self.downstream_nodes)
 
@@ -139,80 +140,79 @@ class EAPGraph:
         print(f"Saving activations requires {activations_tensor_in_gb:.4f} GB of memory per token")
 
     def get_hooks_from_nodes(self, upstream_nodes, downstream_nodes):
-            # Check valid node types
-            for node in upstream_nodes:
-                node_type = node.split(".")[0]
-                assert node_type in self.valid_upstream_node_types, "Invalid upstream node"
-    
-            for node in downstream_nodes:
-                node_type = node.split(".")[0]
-                assert node_type in self.valid_downstream_node_types, "Invalid downstream node"
-    
-            upstream_hooks = []
-            downstream_hooks = []
-    
-            # Process upstream nodes
-            for node in upstream_nodes:
-                node_is_layer_specific = (len(node.split(".")) > 1)
-                node_type = node.split(".")[0]
-                
-                if not node_is_layer_specific:
-                    hook_type = "hook_resid_pre" if node_type == "resid_pre" else "hook_mlp_out" if node_type == "mlp" else "attn.hook_result"
-                    for layer in range(self.cfg.n_layers):
-                        upstream_hooks.append(f"blocks.{layer}.{hook_type}")
-                else:
-                    assert node.split(".")[1].isdigit(), "Layer number must be an integer"
-                    layer = int(node.split(".")[1])
-                    hook_type = "hook_resid_pre" if node_type == "resid_pre" else "hook_mlp_out" if node_type == "mlp" else "attn.hook_result"
+        for node in upstream_nodes:
+            node_type = node.split(".")[0]
+            assert node_type in self.valid_upstream_node_types, "Invalid upstream node"
+
+        for node in downstream_nodes:
+            node_type = node.split(".")[0]
+            assert node_type in self.valid_downstream_node_types, "Invalid downstream node"
+
+        upstream_hooks = []
+        downstream_hooks = []
+
+        for node in upstream_nodes:
+            node_is_layer_specific = (len(node.split(".")) > 1)
+            node_type = node.split(".")[0]
+            if not node_is_layer_specific:
+                hook_type = "hook_resid_pre" if node_type == "resid_pre" else "hook_mlp_out" if node_type == "mlp" else "attn.hook_result"
+                for layer in range(self.cfg.n_layers):
                     upstream_hooks.append(f"blocks.{layer}.{hook_type}")
-    
-            # Process downstream nodes with updated hook handling
-            for node in downstream_nodes:
-                node_is_layer_specific = (len(node.split(".")) > 1)
-                if not node_is_layer_specific:
-                    if node == "head":
-                        for layer in range(self.cfg.n_layers):
-                            downstream_hooks.append(f"blocks.{layer}.attn.hook_result")
-                    elif node == "resid_post" or node == "mlp":
-                        hook_type = "hook_resid_post" if node == "resid_post" else "hook_mlp_in"
-                        for layer in range(self.cfg.n_layers):
-                            downstream_hooks.append(f"blocks.{layer}.{hook_type}")
-                else:
-                    assert node.split(".")[1].isdigit(), "Layer number must be an integer"
-                    layer = int(node.split(".")[1])
-    
-                    if node.startswith("resid_post") or node.startswith("mlp"):
-                        hook_type = "hook_resid_post" if node.startswith("resid_post") else "hook_mlp_in"
+            else:
+                assert node.split(".")[1].isdigit(), "Layer number must be an integer"
+                layer = int(node.split(".")[1])
+                hook_type = "hook_resid_pre" if node_type == "resid_pre" else "hook_mlp_out" if node_type == "mlp" else "attn.hook_result"
+                upstream_hooks.append(f"blocks.{layer}.{hook_type}")
+
+        for node in downstream_nodes:
+            node_is_layer_specific = (len(node.split(".")) > 1)
+            if not node_is_layer_specific:
+                if node == "head":
+                    for layer in range(self.cfg.n_layers):
+                        downstream_hooks.append(f"blocks.{layer}.attn.hook_attn_in")
+                elif node == "resid_post" or node == "mlp":
+                    hook_type = "hook_resid_post" if node == "resid_post" else "hook_mlp_in"
+                    for layer in range(self.cfg.n_layers):
                         downstream_hooks.append(f"blocks.{layer}.{hook_type}")
-                    elif node.startswith("head"):
-                        downstream_hooks.append(f"blocks.{layer}.attn.hook_result")
-    
-            # Remove duplicates and sort
-            upstream_hooks = list(set(upstream_hooks))
-            downstream_hooks = list(set(downstream_hooks))
-    
-            get_upstream_hook_level = partial(self._get_hook_level, component_ordering=self.upstream_component_ordering)
-            get_downstream_hook_level = partial(self._get_hook_level, component_ordering=self.downstream_component_ordering)
-    
-            upstream_hooks.sort(key=get_upstream_hook_level)
-            downstream_hooks.sort(key=get_downstream_hook_level)
-    
-            return upstream_hooks, downstream_hooks
+                else:
+                    raise NotImplementedError("Invalid downstream node")
+            else:
+                assert node.split(".")[1].isdigit(), "Layer number must be an integer"
+                layer = int(node.split(".")[1])
 
-    def _get_hook_level(self, hook, component_ordering):
-        num_components_per_layer = len(component_ordering)
-        layer = int(hook.split(".")[1])
-        hook_type = hook.split(".")[-1]
-        component_order = component_ordering[hook_type]
-        return layer * num_components_per_layer + component_order
+                if node.startswith("resid_post") or node.startswith("mlp"):
+                    hook_type = "hook_resid_post" if node.startswith("resid_post") else "hook_mlp_in"
+                    downstream_hooks.append(f"blocks.{layer}.{hook_type}")
+                elif node.startswith("head"):
+                    downstream_hooks.append(f"blocks.{layer}.attn.hook_attn_in")
+                else:
+                    raise NotImplementedError("Invalid downstream node")
 
+        upstream_hooks = list(set(upstream_hooks))
+        downstream_hooks = list(set(downstream_hooks))
+
+        def get_hook_level(hook, component_ordering):
+            num_components_per_layer = len(component_ordering)
+            layer = int(hook.split(".")[1])
+            hook_type = hook.split(".")[-1]
+            component_order = component_ordering[hook_type]
+            level = layer * num_components_per_layer + component_order
+            return level
+
+        get_upstream_hook_level = partial(get_hook_level, component_ordering=self.upstream_component_ordering)
+        get_downstream_hook_level = partial(get_hook_level, component_ordering=self.downstream_component_ordering)
+
+        upstream_hooks = sorted(upstream_hooks, key=get_upstream_hook_level)
+        downstream_hooks = sorted(downstream_hooks, key=get_downstream_hook_level)
+
+        return upstream_hooks, downstream_hooks
+    
     def get_slice_previous_upstream_nodes(self, downstream_hook):
         layer = downstream_hook.layer()
         hook_type = downstream_hook.name.split(".")[-1]
-        
         if hook_type == "hook_mlp_in":
             return self.upstream_nodes_before_mlp_layer[layer]
-        elif hook_type in ["attn.hook_result", "hook_resid_post"]:
+        elif hook_type in ["hook_attn_in", "hook_resid_post"]:
             return self.upstream_nodes_before_layer[layer]
 
     def get_hook_slice(self, hook_name):
@@ -246,38 +246,22 @@ class EAPGraph:
             top_edges.append((self.upstream_nodes[upstream_node_idx], self.downstream_nodes[downstream_node_idx], score.item()))
 
         return top_edges
-    def subgraph_top_edges(
-        self,
-        threshold=None,
-        abs_scores=True
-    ):
+
+    def subgraph_top_edges(self, threshold=None, abs_scores=True):
         assert self.eap_scores is not None, "EAP scores have not been computed yet"
-
         top_edges = self.top_edges(threshold=threshold, abs_scores=abs_scores)
-
         upstream_nodes = [edge[0] for edge in top_edges]
         downstream_nodes = [edge[1] for edge in top_edges]
-        subgraph = EAPGraph(upstream_nodes, downstream_nodes)
-
+        subgraph = EAPGraph(self.cfg, upstream_nodes, downstream_nodes)
         return subgraph
 
-    def show(
-        self,
-        threshold=None,
-        abs_scores=True,
-        fname: str="eap_graph.png"
-    ):
+    def show(self, threshold=None, abs_scores=True, fname: str="eap_graph.png"):
         import pygraphviz as pgv
 
         minimum_penwidth = 0.2
         edges = self.top_edges(threshold=threshold, abs_scores=abs_scores)
 
-        g = pgv.AGraph(
-            name='root',
-            strict=True,
-            directed=True
-        )
-
+        g = pgv.AGraph(name='root', strict=True, directed=True)
         g.graph_attr.update(ranksep='0.1', nodesep='0.1', compound=True)
         g.node_attr.update(fixedsize='true', width='1.5', height='.5')
 
@@ -293,10 +277,8 @@ class EAPGraph:
 
         min_layer = 999
         max_layer = -1
-        layers = list(range(0, 32))
 
-        for edge in edges:
-            parent_node = edge[0]
+                    parent_node = edge[0]
             child_node = edge[1]
             min_layer = min(min_layer, find_layer_node(parent_node))
             max_layer = max(max_layer, find_layer_node(child_node))
