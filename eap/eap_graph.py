@@ -278,7 +278,8 @@ class EAPGraph:
         min_layer = 999
         max_layer = -1
 
-                    parent_node = edge[0]
+        for edge in edges:
+            parent_node = edge[0]
             child_node = edge[1]
             min_layer = min(min_layer, find_layer_node(parent_node))
             max_layer = max(max_layer, find_layer_node(child_node))
