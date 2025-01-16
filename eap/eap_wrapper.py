@@ -1,3 +1,14 @@
+from typing import Callable, List, Union
+import gc
+import torch
+from torch import Tensor
+from tqdm import tqdm
+import einops
+from jaxtyping import Float, Int
+from transformer_lens import HookedTransformer
+from transformer_lens.hook_points import HookPoint
+from eap.eap_graph import EAPGraph
+
 def EAP_clean_backward_hook(
     grad: Union[Float[Tensor, "batch_size seq_len n_heads d_model"], Float[Tensor, "batch_size seq_len d_model"]],
     hook: HookPoint,
@@ -80,6 +91,24 @@ def EAP(
     # Hook filters updated for new hook names
     upstream_hook_filter = lambda name: any(name.endswith(hook) for hook in graph.upstream_hooks)
     downstream_hook_filter = lambda name: any(name.endswith(hook) for hook in graph.downstream_hooks)
+
+    corruped_upstream_hook_fn = partial(
+        EAP_corrupted_forward_hook,
+        upstream_activations_difference=upstream_activations_difference,
+        graph=graph
+    )
+
+    clean_upstream_hook_fn = partial(
+        EAP_clean_forward_hook,
+        upstream_activations_difference=upstream_activations_difference,
+        graph=graph
+    )
+
+    clean_downstream_hook_fn = partial(
+        EAP_clean_backward_hook,
+        upstream_activations_difference=upstream_activations_difference,
+        graph=graph
+    )
 
     for idx in tqdm(range(0, num_prompts, batch_size)):
         if debug and idx == 0:  # Only print for first batch to avoid spam
